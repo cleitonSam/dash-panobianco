@@ -1,0 +1,554 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import axios from "axios";
+import {
+  MessageSquare, Search, ChevronLeft, ChevronRight,
+  Building2, Star, Flame, Clock, X, RefreshCw,
+  Download, Zap, Bot, BarChart3, Target, Brain, Trash2, TrendingUp, CheckCircle
+} from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import DashboardSidebar from "@/components/DashboardSidebar";
+
+interface Conversation {
+  id: number;
+  conversation_id: string;
+  contato_nome: string;
+  contato_fone: string;
+  contato_telefone: string;
+  score_lead: number;
+  lead_qualificado: boolean;
+  intencao_de_compra: boolean;
+  status: string;
+  updated_at: string;
+  created_at: string;
+  total_mensagens_cliente: number;
+  total_mensagens_ia: number;
+  resumo_ia: string;
+  canal: string;
+  unidade_nome: string;
+  pausada: boolean;
+}
+
+interface EventoFunil {
+  tipo_evento: string;
+  descricao: string | null;
+  score_incremento: number;
+  created_at: string;
+}
+
+const eventoLabels: Record<string, string> = {
+  mudanca_unidade: "Unidade Identificada",
+  link_matricula_enviado: "Link de Matrícula Enviado",
+  solicitacao_telefone: "Contato Solicitado",
+  interesse_detectado: "Interesse Detectado",
+  unidade_escolhida: "Unidade Escolhida",
+};
+
+const statusColor: Record<string, string> = {
+  open: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20",
+  resolved: "bg-[#D4AF37]/10 text-[#D4AF37] border border-[#D4AF37]/20",
+  closed: "bg-slate-700/20 text-slate-500 border border-slate-700/20",
+  encerrada: "bg-slate-500/15 text-slate-400 border border-slate-500/20",
+  pending: "bg-amber-500/15 text-amber-400 border border-amber-500/20",
+};
+const statusLabel: Record<string, string> = {
+  open: "Aberta", resolved: "Atendido", closed: "Fechada", encerrada: "Encerrada", pending: "Pendente"
+};
+
+export default function ConversasPage() {
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [summarizing, setSummarizing] = useState(false);
+  const [clearingMemory, setClearingMemory] = useState(false);
+  const [memoryClearedId, setMemoryClearedId] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [unidades, setUnidades] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const limit = 20;
+  const [busca, setBusca] = useState("");
+  const [buscaInput, setBuscaInput] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [filterUnidade, setFilterUnidade] = useState<number | "">("");
+  const [selected, setSelected] = useState<Conversation | null>(null);
+  const [eventos, setEventos] = useState<EventoFunil[]>([]);
+  const [loadingEventos, setLoadingEventos] = useState(false);
+
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : "";
+  const config = { headers: { Authorization: `Bearer ${token}` } };
+
+  const fetchConversations = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.append("limit", limit.toString());
+      params.append("offset", offset.toString());
+      if (filterUnidade) params.append("unidade_id", filterUnidade.toString());
+      if (filterStatus) params.append("status", filterStatus);
+      if (busca) params.append("busca", busca);
+      const res = await axios.get(`/api-backend/dashboard/conversations?${params}`, config);
+      setConversations(res.data.data || []);
+      setTotal(res.data.total || 0);
+    } catch (err) { console.error(err); }
+    finally { setLoading(false); }
+  }, [offset, filterUnidade, filterStatus, busca]);
+
+  useEffect(() => {
+    axios.get("/api-backend/dashboard/unidades", config).then(r => setUnidades(r.data)).catch(() => {});
+  }, []);
+
+  useEffect(() => { fetchConversations(); }, [fetchConversations]);
+
+  useEffect(() => {
+    if (!selected) { setEventos([]); return; }
+    setLoadingEventos(true);
+    axios.get(`/api-backend/dashboard/conversations/${selected.conversation_id}/eventos`, config)
+      .then(r => setEventos(r.data || []))
+      .catch(() => setEventos([]))
+      .finally(() => setLoadingEventos(false));
+  }, [selected?.conversation_id]);
+
+  const handleSearch = (e: React.FormEvent) => { e.preventDefault(); setBusca(buscaInput); setOffset(0); };
+  const clearFilters = () => { setBusca(""); setBuscaInput(""); setFilterStatus(""); setFilterUnidade(""); setOffset(0); };
+
+  const exportLeads = async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (filterUnidade) params.append("unidade_id", filterUnidade.toString());
+      if (filterStatus) params.append("status", filterStatus);
+      const res = await axios.get(`/api-backend/management/export-leads?${params}`, config);
+      const allLeads = res.data || [];
+      const headers = ["Nome", "Telefone", "Score", "Qualificado", "Intencao", "Status", "Unidade", "Msgs Cliente", "IA", "Data"];
+      const rows = allLeads.map((c: any) => [
+        c.contato_nome || "Anônimo", c.contato_fone || c.contato_telefone || "",
+        c.score_lead || 0, c.lead_qualificado ? "Sim" : "Não", c.intencao_de_compra ? "Sim" : "Não",
+        c.status, c.unidade_nome || "", c.total_mensagens_cliente || 0, c.total_mensagens_ia || 0,
+        c.created_at ? new Date(c.created_at).toLocaleString() : ""
+      ]);
+      const csv = [headers, ...rows].map(e => e.map((v: any) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+      const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csv], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `leads_${new Date().toISOString().split("T")[0]}.csv`;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    } catch (err) { console.error(err); }
+    finally { setExporting(false); }
+  };
+  
+  const handleGenerateSummary = async () => {
+    if (!selected) return;
+    setSummarizing(true);
+    try {
+      const res = await axios.post(`/api-backend/dashboard/conversations/${selected.conversation_id}/resumo`, {}, config);
+      if (res.data.status === "success") {
+        const newSummary = res.data.resumo_ia;
+        setSelected({ ...selected, resumo_ia: newSummary });
+        setConversations(conversations.map(c => c.conversation_id === selected.conversation_id ? { ...c, resumo_ia: newSummary } : c));
+      }
+    } catch (err) {
+      console.error("Erro ao gerar resumo:", err);
+    } finally {
+      setSummarizing(false);
+    }
+  };
+
+  const totalPages = Math.ceil(total / limit);
+  const currentPage = Math.floor(offset / limit) + 1;
+
+  return (
+    <div className="min-h-screen bg-[#020617] text-white flex">
+      <DashboardSidebar activePage="conversas" />
+      <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        {/* Top Bar */}
+        <header className="flex-shrink-0 bg-slate-950/80 border-b border-white/5 px-8 py-5 flex items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-3 mb-1">
+              <MessageSquare className="w-5 h-5 text-[#D4AF37]" />
+              <h1 className="text-xl font-black" style={{ background: "linear-gradient(135deg,#fff 0%,#D4AF37 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                Central de Inteligência
+              </h1>
+            </div>
+            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{total} conversas mapeadas</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={exportLeads} disabled={exporting}
+              className="hidden sm:flex items-center gap-2 bg-white/5 hover:bg-[#D4AF37]/10 border border-white/8 px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all text-slate-400 hover:text-[#D4AF37] hover:border-[#D4AF37]/20 disabled:opacity-50">
+              <Download className="w-4 h-4" /> {exporting ? "Exportando..." : "Exportar Leads"}
+            </button>
+            <button onClick={() => fetchConversations()} className="p-2.5 bg-white/5 hover:bg-[#D4AF37]/10 rounded-xl border border-white/8 transition-all">
+              <RefreshCw className={`w-4 h-4 text-[#D4AF37] ${loading ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+        </header>
+
+        <div className="flex-1 flex overflow-hidden">
+          {/* List Panel */}
+          <div className={`flex flex-col bg-slate-900/20 border-r border-white/5 ${selected ? "hidden lg:flex lg:w-[380px]" : "w-full"}`}>
+            {/* Filters */}
+            <div className="p-5 space-y-3 bg-slate-950/30 border-b border-white/5">
+              <form onSubmit={handleSearch} className="relative">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                <input value={buscaInput} onChange={e => setBuscaInput(e.target.value)} placeholder="Buscar por nome ou fone..."
+                  className="w-full bg-slate-900/60 border border-white/8 rounded-2xl pl-11 pr-4 py-3.5 text-sm focus:outline-none focus:border-[#D4AF37]/40 transition-all" />
+              </form>
+              <div className="flex gap-2 flex-wrap">
+                <select value={filterUnidade} onChange={e => { setFilterUnidade(e.target.value ? Number(e.target.value) : ""); setOffset(0); }}
+                  className="bg-slate-900/60 border border-white/8 rounded-xl px-3 py-2.5 text-[11px] font-black uppercase text-slate-500 focus:outline-none cursor-pointer flex-1">
+                  <option value="">Todas Unidades</option>
+                  {unidades.map(u => <option key={u.id} value={u.id}>{u.nome}</option>)}
+                </select>
+                <select value={filterStatus} onChange={e => { setFilterStatus(e.target.value); setOffset(0); }}
+                  className="bg-slate-900/60 border border-white/8 rounded-xl px-3 py-2.5 text-[11px] font-black uppercase text-slate-500 focus:outline-none cursor-pointer flex-1">
+                  <option value="">Todos Status</option>
+                  <option value="open">Abertas</option>
+                  <option value="resolved">Atendidas</option>
+                  <option value="closed">Fechadas</option>
+                </select>
+                {(busca || filterStatus || filterUnidade) && (
+                  <button onClick={clearFilters} className="bg-red-500/10 text-red-400 border border-red-500/20 rounded-xl px-3 py-2 text-[10px] font-black transition-all hover:bg-red-500/20">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* List */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+              {loading ? (
+                [...Array(6)].map((_, i) => (
+                  <div key={i} className="px-5 py-5 border-b border-white/[0.03] animate-pulse">
+                    <div className="flex items-center gap-4">
+                      <div className="w-11 h-11 bg-white/5 rounded-2xl" />
+                      <div className="flex-1 space-y-2">
+                        <div className="h-3 bg-white/5 rounded w-1/2" />
+                        <div className="h-2 bg-white/5 rounded w-1/3" />
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : conversations.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-center px-6">
+                  <MessageSquare className="w-12 h-12 text-slate-700 mb-4" />
+                  <p className="font-black text-slate-400 uppercase tracking-widest text-sm">Nenhum resultado</p>
+                </div>
+              ) : (
+                conversations.map(conv => (
+                  <button key={conv.id} onClick={() => setSelected(conv)}
+                    className={`w-full text-left px-5 py-5 border-b border-white/[0.03] transition-all relative group ${selected?.id === conv.id ? "bg-[#D4AF37]/5" : "hover:bg-white/[0.02]"}`}>
+                    {selected?.id === conv.id && <div className="absolute left-0 top-4 bottom-4 w-0.5 bg-[#D4AF37] rounded-r-full shadow-[0_0_8px_rgba(212,175,55,0.6)]" />}
+                    <div className="flex items-start gap-4">
+                      <div className="w-11 h-11 rounded-2xl bg-slate-900/60 border border-white/5 flex items-center justify-center text-base font-black flex-shrink-0 group-hover:border-[#D4AF37]/20 transition-colors">
+                        {conv.contato_nome?.charAt(0) || "?"}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2 mb-1.5">
+                          <p className="text-sm font-black truncate group-hover:text-[#D4AF37] transition-colors">{conv.contato_nome || "Anônimo"}</p>
+                          <span className={`text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-wider flex-shrink-0 ${statusColor[conv.status] || "bg-slate-700/20 text-slate-500"}`}>
+                            {statusLabel[conv.status] || conv.status}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 font-medium mb-2">{conv.contato_fone || conv.contato_telefone}</p>
+                        <div className="flex items-center gap-3">
+                          <div className="flex gap-1">
+                            {[1, 2, 3, 4, 5].map(s => (
+                              <div key={s} className={`w-1.5 h-1.5 rounded-full ${s <= (conv.score_lead || 0) ? "bg-[#D4AF37] shadow-[0_0_4px_rgba(212,175,55,0.5)]" : "bg-white/10"}`} />
+                            ))}
+                          </div>
+                          {conv.pausada && (
+                            <span className="text-[9px] font-black text-amber-400 flex items-center gap-1 bg-amber-400/10 px-2 py-0.5 rounded-full border border-amber-400/20">
+                              <Bot className="w-2.5 h-2.5" /> IA Pausada
+                            </span>
+                          )}
+                          {conv.intencao_de_compra && (
+                            <span className="text-[9px] font-black text-rose-400 flex items-center gap-1 bg-rose-400/10 px-2 py-0.5 rounded-full">
+                              <Flame className="w-2.5 h-2.5" /> Quente
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="p-4 border-t border-white/5 bg-slate-950/40 flex items-center justify-between">
+                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Pág. {currentPage}/{totalPages}</span>
+                <div className="flex gap-2">
+                  <button onClick={() => setOffset(Math.max(0, offset - limit))} disabled={offset === 0}
+                    className="p-2.5 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 disabled:opacity-20 transition-all">
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => setOffset(offset + limit)} disabled={currentPage >= totalPages}
+                    className="p-2.5 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 disabled:opacity-20 transition-all">
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Detail Panel */}
+          <AnimatePresence>
+            {selected ? (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="flex-1 flex flex-col overflow-hidden bg-[#020617]/40 border-l border-white/5">
+                <div className="p-8 border-b border-white/5">
+                  <div className="flex items-center justify-between mb-6 lg:hidden">
+                    <button onClick={() => setSelected(null)} className="p-2.5 bg-white/5 rounded-xl border border-white/5 hover:bg-[#D4AF37]/10 transition-all">
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-6">
+                    <div className="w-20 h-20 rounded-[2rem] bg-gradient-to-br from-blue-600/20 to-[#D4AF37]/20 border-2 border-[#D4AF37]/20 flex items-center justify-center text-4xl font-black text-[#D4AF37] relative flex-shrink-0">
+                      {selected.contato_nome?.charAt(0) || "?"}
+                      <div className="absolute -bottom-2 -right-2 p-2.5 bg-[#D4AF37] text-black rounded-xl shadow-lg">
+                        <Zap className="w-4 h-4" />
+                      </div>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-3 mb-2 flex-wrap">
+                        <h2 className="text-2xl font-black truncate">{selected.contato_nome || "Anônimo"}</h2>
+                        <span className={`text-[10px] font-black px-3 py-1.5 rounded-full uppercase tracking-widest ${statusColor[selected.status] || "bg-slate-700/20 text-slate-500"}`}>
+                          {statusLabel[selected.status] || selected.status}
+                        </span>
+                      </div>
+                      <p className="text-slate-500 font-bold flex items-center gap-2 text-sm">
+                        <Clock className="w-4 h-4 text-[#D4AF37]/40" />
+                        {selected.contato_fone || selected.contato_telefone}
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-end gap-3">
+                      <button 
+                        onClick={async () => {
+                          try {
+                            const res = await axios.post(`/api-backend/dashboard/conversations/${selected.conversation_id}/toggle-ia`, {}, config);
+                            const newStatus = res.data.pausada;
+                            setSelected({ ...selected, pausada: newStatus });
+                            setConversations(conversations.map(c => c.conversation_id === selected.conversation_id ? { ...c, pausada: newStatus } : c));
+                          } catch (err) { console.error(err); }
+                        }}
+                        className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                          selected.pausada 
+                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20" 
+                            : "bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
+                        }`}
+                      >
+                        {selected.pausada ? (
+                          <><Zap className="w-4 h-4" /> Ativar IA</>
+                        ) : (
+                          <><X className="w-4 h-4" /> Pausar IA</>
+                        )}
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (!confirm("Limpar toda a memória da IA nessa conversa? A IA vai esquecer o histórico.")) return;
+                          setClearingMemory(true);
+                          try {
+                            await axios.post(`/api-backend/dashboard/conversations/${selected.conversation_id}/limpar-memoria`, {}, config);
+                            setSelected({ ...selected, total_mensagens_cliente: 0, total_mensagens_ia: 0 });
+                            setConversations(conversations.map(c => c.conversation_id === selected.conversation_id ? { ...c, total_mensagens_cliente: 0, total_mensagens_ia: 0 } : c));
+                            setMemoryClearedId(String(selected.conversation_id));
+                            setTimeout(() => setMemoryClearedId(null), 3000);
+                          } catch (err) { console.error(err); }
+                          finally { setClearingMemory(false); }
+                        }}
+                        disabled={clearingMemory}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20 disabled:opacity-50"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        {clearingMemory ? "Limpando..." : "Limpar Memória"}
+                      </button>
+                      {memoryClearedId === String(selected.conversation_id) && (
+                        <span className="text-[10px] font-black text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/15">
+                          MEMÓRIA LIMPA ✓
+                        </span>
+                      )}
+                      {selected.pausada && (
+                        <span className="text-[10px] font-black text-amber-500 bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/15 animate-pulse">
+                          AUTOMAÇÃO DESATIVADA
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-8 space-y-8 custom-scrollbar">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    {/* Lead Score — dots visuais */}
+                    <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 hover:border-[#D4AF37]/15 transition-all">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Star className="w-4 h-4 text-[#D4AF37]/50" />
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Lead Score</span>
+                      </div>
+                      <div className="flex gap-1.5 items-center">
+                        {[1, 2, 3, 4, 5].map(s => (
+                          <div key={s} className={`w-3 h-3 rounded-full transition-all ${
+                            s <= (selected.score_lead || 0)
+                              ? "bg-[#D4AF37] shadow-[0_0_6px_rgba(212,175,55,0.6)]"
+                              : "bg-white/10"
+                          }`} />
+                        ))}
+                        <span className="text-xs font-black text-slate-400 ml-1">{selected.score_lead || 0}/5</span>
+                      </div>
+                    </div>
+
+                    {/* Intenção — ALTA / MÉDIA / BAIXA */}
+                    <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 hover:border-[#D4AF37]/15 transition-all">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Flame className="w-4 h-4 text-[#D4AF37]/50" />
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Intenção</span>
+                      </div>
+                      <p className="text-xl font-black">
+                        {selected.intencao_de_compra ? "ALTA 🔥" : (selected.score_lead || 0) > 0 ? "MÉDIA" : "BAIXA"}
+                      </p>
+                    </div>
+
+                    {/* Mensagens */}
+                    <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 hover:border-[#D4AF37]/15 transition-all">
+                      <div className="flex items-center gap-2 mb-3">
+                        <MessageSquare className="w-4 h-4 text-[#D4AF37]/50" />
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Mensagens</span>
+                      </div>
+                      <p className="text-xl font-black">
+                        {(selected.total_mensagens_cliente || 0) + (selected.total_mensagens_ia || 0)}
+                      </p>
+                    </div>
+
+                    {/* Fase Funil — mapeamento completo */}
+                    <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 hover:border-[#D4AF37]/15 transition-all">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Target className="w-4 h-4 text-[#D4AF37]/50" />
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Fase Funil</span>
+                      </div>
+                      <p className="text-xl font-black">
+                        {selected.status === "open" ? "NEGOCIAÇÃO"
+                          : selected.status === "resolved" ? "CONVERTIDO"
+                          : selected.status === "pending" ? "PENDENTE"
+                          : "FINALIZADO"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-7 hover:border-[#D4AF37]/15 transition-all">
+                    <div className="flex items-center justify-between mb-5">
+                      <div className="flex items-center gap-3">
+                        <Brain className="w-5 h-5 text-[#D4AF37]" />
+                        <h3 className="text-lg font-black uppercase tracking-widest">Resumo Neural</h3>
+                      </div>
+                      <button 
+                        onClick={handleGenerateSummary}
+                        disabled={summarizing}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-[#D4AF37]/10 hover:bg-[#D4AF37]/20 border border-[#D4AF37]/20 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all disabled:opacity-50"
+                      >
+                        {summarizing ? (
+                          <><RefreshCw className="w-3 h-3 animate-spin" /> Gerando...</>
+                        ) : (
+                          <><Zap className="w-3 h-3" /> Gerar Resumo</>
+                        )}
+                      </button>
+                    </div>
+                    <p className="text-slate-400 leading-relaxed italic">
+                      "{selected.resumo_ia || "Nenhuma análise disponível para este lead."}"
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-7 space-y-4 hover:border-[#D4AF37]/15 transition-all">
+                    <h4 className="text-[11px] font-black text-slate-500 uppercase tracking-widest mb-2">Informações de Tráfego</h4>
+                    {[
+                      { label: "Unidade de Origem", value: selected.unidade_nome || "—", icon: Building2 },
+                      { label: "Canal de Entrada", value: selected.canal || "—", icon: Zap },
+                      { label: "Registrado em", value: selected.created_at ? new Date(selected.created_at).toLocaleString("pt-BR") : "—", icon: Clock },
+                      { label: "Última Atividade", value: selected.updated_at ? new Date(selected.updated_at).toLocaleString("pt-BR") : "—", icon: Clock },
+                    ].map(row => (
+                      <div key={row.label} className="flex justify-between items-center py-3 border-b border-white/5 last:border-0 last:pb-0">
+                        <span className="text-sm font-bold text-slate-500 flex items-center gap-2.5">
+                          <row.icon className="w-4 h-4 text-[#D4AF37]/40" /> {row.label}
+                        </span>
+                        <span className="text-sm font-black">{row.value}</span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between items-center py-3">
+                      <span className="text-sm font-bold text-slate-500 flex items-center gap-2.5">
+                        <CheckCircle className="w-4 h-4 text-[#D4AF37]/40" /> Lead Qualificado
+                      </span>
+                      <span className={`text-[10px] font-black px-2.5 py-1 rounded-full uppercase tracking-wider ${
+                        selected.lead_qualificado
+                          ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
+                          : "bg-slate-700/20 text-slate-500 border border-slate-700/20"
+                      }`}>
+                        {selected.lead_qualificado ? "Sim" : "Não"}
+                      </span>
+                    </div>
+                  </div>
+                  {/* Histórico de Pontuação */}
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-7 hover:border-[#D4AF37]/15 transition-all">
+                    <div className="flex items-center gap-3 mb-5">
+                      <TrendingUp className="w-5 h-5 text-[#D4AF37]" />
+                      <h3 className="text-lg font-black uppercase tracking-widest">Histórico de Pontuação</h3>
+                    </div>
+
+                    {loadingEventos ? (
+                      <div className="space-y-3">
+                        {[...Array(3)].map((_, i) => (
+                          <div key={i} className="flex items-center gap-4 animate-pulse">
+                            <div className="w-8 h-8 bg-white/5 rounded-xl flex-shrink-0" />
+                            <div className="flex-1 space-y-1.5">
+                              <div className="h-2.5 bg-white/5 rounded w-1/3" />
+                              <div className="h-2 bg-white/5 rounded w-2/3" />
+                            </div>
+                            <div className="w-12 h-5 bg-white/5 rounded-full" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : eventos.length === 0 ? (
+                      <p className="text-slate-500 text-sm italic">Nenhum evento de pontuação registrado ainda.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {eventos.map((ev, idx) => (
+                          <div key={idx} className="flex items-start gap-4 py-3 border-b border-white/5 last:border-0 last:pb-0">
+                            <div className="w-8 h-8 rounded-xl bg-[#D4AF37]/10 border border-[#D4AF37]/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                              <Star className="w-3.5 h-3.5 text-[#D4AF37]" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-black">{eventoLabels[ev.tipo_evento] ?? ev.tipo_evento}</p>
+                              {ev.descricao && (
+                                <p className="text-xs text-slate-500 mt-0.5 truncate">{ev.descricao}</p>
+                              )}
+                              <p className="text-[10px] text-slate-600 mt-1">
+                                {new Date(ev.created_at).toLocaleString("pt-BR")}
+                              </p>
+                            </div>
+                            <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 flex-shrink-0 self-start">
+                              +{ev.score_incremento} pts
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            ) : (
+              <div className="flex-1 hidden lg:flex flex-col items-center justify-center opacity-20 select-none">
+                <Bot className="w-28 h-28 mb-6" />
+                <p className="text-xl font-black uppercase tracking-[0.4em]">Neural Insight</p>
+                <p className="text-sm italic mt-2 text-slate-400">Selecione uma interação para análise profunda</p>
+              </div>
+            )}
+          </AnimatePresence>
+        </div>
+      </main>
+
+      <style jsx global>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(212,175,55,0.1); border-radius: 10px; }
+      `}</style>
+    </div>
+  );
+}

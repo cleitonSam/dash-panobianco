@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.log
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+
+# Python venv (root-level only)
+IA/
+/bin/
+/lib/
+/lib64/
+/include/
+pyvenv.cfg
+
+# Env files with credentials
+.env.*
+!.env.example
+
+# Claude
+.claude/
